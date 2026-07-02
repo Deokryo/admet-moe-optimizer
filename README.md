@@ -117,6 +117,57 @@ Dashboard에서 확인할 수 있는 항목:
 
 Plotly가 설치되어 있으면 interactive chart를 사용하고, import가 실패하면 Streamlit 기본 `st.line_chart`로 fallback됩니다.
 
+## 10-Fold GNN Benchmark
+
+5개 ADMET endpoint와 4개 GNN 모델(`gine`, `attentivefp`, `dmpnn`, `cmpnn`)을 10-fold cross-validation으로 비교할 수 있습니다. 기본 split은 Murcko scaffold 기반이며, 같은 scaffold를 가진 분자는 같은 fold에 배정됩니다.
+
+빠른 smoke test:
+
+```powershell
+python scripts/run_10fold_gnn_cv.py --dataset Solubility_AqSolDB --model gine --epochs 1 --device cuda --limit 200 --skip-existing
+```
+
+단일 dataset/model 10-fold 실행:
+
+```powershell
+python scripts/run_10fold_gnn_cv.py --dataset Solubility_AqSolDB --model gine --epochs 10 --device cuda --skip-existing
+```
+
+전체 benchmark 실행:
+
+```powershell
+python scripts/run_10fold_gnn_cv.py --all --epochs 10 --device cuda --skip-existing
+```
+
+CPU로 실행하려면 `--device cpu`를 사용하면 됩니다.
+
+```powershell
+python scripts/run_10fold_gnn_cv.py --dataset BBB_Martins --model cmpnn --epochs 5 --device cpu --skip-existing
+```
+
+주요 옵션:
+
+- `--split-type scaffold`: 기본값입니다. Murcko scaffold 기준으로 fold를 나눕니다.
+- `--split-type random`: random KFold를 사용합니다.
+- `--split-type stratified`: classification label 기준 stratified KFold를 시도합니다.
+- `--num-folds 10`: 기본 10-fold입니다.
+- `--limit 200`: 디버깅용으로 데이터 일부만 사용합니다.
+- `--skip-existing`: 이미 `metrics.json`이 있는 fold는 건너뜁니다.
+
+10-fold 결과는 아래 위치에 생성됩니다.
+
+```text
+checkpoints_cv/{dataset_name}/{model_type}/fold_{fold}/best.pt
+checkpoints_cv/{dataset_name}/{model_type}/fold_{fold}/config.json
+checkpoints_cv/{dataset_name}/{model_type}/fold_{fold}/metrics.json
+checkpoints_cv/{dataset_name}/{model_type}/cv_summary.json
+experiments/gnn_10fold_comparison.csv
+```
+
+`GNN Training Dashboard`의 `10-Fold CV Comparison` 탭에서 fold별 metric, 모델 비교 표, best model 표시를 확인할 수 있습니다. `Molecule Optimizer`에서 `Predictor mode`를 `Auto best per endpoint`로 선택하면 CV summary 기준 best model checkpoint를 우선 사용하고, checkpoint가 없으면 기존 single-run checkpoint 또는 dummy predictor로 fallback합니다.
+
+10-fold checkpoint와 비교 CSV는 로컬 학습 산출물이므로 Git에 올리지 않습니다. `.gitignore`에서 `checkpoints_cv/`와 `experiments/gnn_10fold_comparison.csv`가 제외됩니다.
+
 ## metrics.json 구조
 
 학습 스크립트는 다음 구조로 `metrics.json`을 저장합니다.

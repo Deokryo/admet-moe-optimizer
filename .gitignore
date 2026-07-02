@@ -26,9 +26,13 @@ data/
 
 # Model artifacts can be large; keep them out of git
 checkpoints/
+checkpoints_cv/
 *.pt
 *.pth
 *.ckpt
+
+# Cross-validation result summaries are generated locally
+experiments/gnn_10fold_comparison.csv
 
 # OS files
 .DS_Store
