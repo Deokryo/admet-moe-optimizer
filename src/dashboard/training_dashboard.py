@@ -470,16 +470,28 @@ def _render_interim_summary(completed_df: pd.DataFrame, task: str) -> None:
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
+def _plot_completed_fold_metrics(completed_df: pd.DataFrame, task: str) -> None:
+    """Render completed fold test metrics as fold-level curves."""
+    if completed_df.empty or "fold" not in completed_df.columns:
+        st.info("그래프로 표시할 완료 fold test metric이 아직 없습니다.")
+        return
+    chart_df = completed_df.rename(columns={"fold": "epoch"})
+    metrics = REGRESSION_METRICS if task == "regression" else CLASSIFICATION_METRICS
+    _plot_line(chart_df, [metric for metric in metrics if metric in completed_df.columns], "Completed fold test metrics")
+
+
 def _render_live_monitor(cv_root: Path) -> None:
     """Render live status, fold table, curves, and interim results."""
     st.markdown("### Live 10-Fold Monitor")
-    left, right, third = st.columns([1, 1, 1])
+    left, right, third, fourth = st.columns([1, 1, 1, 1])
     with left:
         dataset = st.selectbox("Monitor dataset", [item["dataset"] for item in DATASETS], key="cv_monitor_dataset")
     with right:
         model_type = st.selectbox("Monitor model", MODEL_TYPES, key="cv_monitor_model")
     with third:
         refresh_interval = st.selectbox("Refresh interval", ["manual", "5 seconds", "10 seconds", "30 seconds"], key="cv_monitor_refresh")
+    with fourth:
+        monitor_view = st.radio("Monitor view", ["Table view", "Graph view"], horizontal=True, key="cv_monitor_view")
     auto_refresh = st.checkbox("Auto refresh", value=False, key="cv_monitor_auto")
 
     status_path = _run_status_path(cv_root, dataset, model_type)
@@ -524,39 +536,67 @@ def _render_live_monitor(cv_root: Path) -> None:
             atomic_write_json(status_path, status)
             st.warning("run_status.json을 stopped로 표시했습니다. 실제 OS process는 종료하지 않았습니다.")
 
-    st.markdown("**Fold status**")
-    st.dataframe(_fold_status_frame(cv_root, dataset, model_type, status), use_container_width=True, hide_index=True)
-
+    fold_status_df = _fold_status_frame(cv_root, dataset, model_type, status)
     current_fold = (status or {}).get("current_fold")
     if current_fold is None:
         current_fold = 0
     live_rows = read_jsonl_safe(cv_root / dataset / model_type / f"fold_{int(current_fold)}" / "live_metrics.jsonl")
-    st.markdown("**Current fold training curves**")
-    if live_rows:
-        live_df = pd.DataFrame(live_rows)
-        _plot_line(live_df, ["train_loss", "valid_loss"], f"Fold {current_fold} Train loss / Valid loss")
-        if task == "regression":
-            _plot_line(live_df, ["valid_mae", "valid_rmse", "valid_r2"], f"Fold {current_fold} Regression metrics")
-        else:
-            _plot_line(live_df, ["valid_auroc", "valid_auprc", "valid_f1", "valid_accuracy"], f"Fold {current_fold} Classification metrics")
-    else:
-        st.info("현재 fold의 live_metrics.jsonl이 아직 없거나 갱신 중입니다.")
-
-    st.markdown("**Completed fold test results**")
     completed_df = _completed_fold_metrics(cv_root, dataset, model_type, task, num_folds)
-    if not completed_df.empty:
-        st.dataframe(completed_df, use_container_width=True, hide_index=True)
-    _render_interim_summary(completed_df, task)
-
     summary = _load_cv_summary(cv_root, dataset, model_type)
-    st.markdown("**Final CV summary**")
-    if summary:
-        metric_rows = []
-        for metric, values in (summary.get("metrics_mean_std") or {}).items():
-            metric_rows.append({"Metric": metric.upper(), "Mean": _format_value(values.get("mean")), "Std": _format_value(values.get("std"))})
-        st.dataframe(pd.DataFrame(metric_rows), use_container_width=True, hide_index=True)
+
+    if monitor_view == "Table view":
+        st.markdown("**Fold status**")
+        st.dataframe(fold_status_df, use_container_width=True, hide_index=True)
+
+        st.markdown("**Current fold epoch table**")
+        if live_rows:
+            st.dataframe(pd.DataFrame(live_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("현재 fold의 live_metrics.jsonl이 아직 없거나 갱신 중입니다.")
+
+        st.markdown("**Completed fold test results**")
+        if not completed_df.empty:
+            st.dataframe(completed_df, use_container_width=True, hide_index=True)
+        _render_interim_summary(completed_df, task)
+
+        st.markdown("**Final CV summary**")
+        if summary:
+            metric_rows = []
+            for metric, values in (summary.get("metrics_mean_std") or {}).items():
+                metric_rows.append({"Metric": metric.upper(), "Mean": _format_value(values.get("mean")), "Std": _format_value(values.get("std"))})
+            st.dataframe(pd.DataFrame(metric_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("cv_summary.json은 아직 생성되지 않았습니다.")
     else:
-        st.info("cv_summary.json은 아직 생성되지 않았습니다.")
+        st.markdown("**Fold status overview**")
+        if not fold_status_df.empty:
+            status_counts = fold_status_df["Status"].value_counts().reset_index()
+            status_counts.columns = ["Status", "Count"]
+            try:
+                import plotly.express as px
+
+                fig = px.bar(status_counts, x="Status", y="Count", text="Count", title="Fold status count")
+                fig.update_layout(height=320)
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception:
+                st.bar_chart(status_counts.set_index("Status"))
+
+        st.markdown("**Current fold training curves**")
+        if live_rows:
+            live_df = pd.DataFrame(live_rows)
+            _plot_line(live_df, ["train_loss", "valid_loss"], f"Fold {current_fold} Train loss / Valid loss")
+            if task == "regression":
+                _plot_line(live_df, ["valid_mae", "valid_rmse", "valid_r2"], f"Fold {current_fold} Regression metrics")
+            else:
+                _plot_line(live_df, ["valid_auroc", "valid_auprc", "valid_f1", "valid_accuracy"], f"Fold {current_fold} Classification metrics")
+        else:
+            st.info("현재 fold의 live_metrics.jsonl이 아직 없거나 갱신 중입니다.")
+
+        st.markdown("**Completed fold metric graph**")
+        _plot_completed_fold_metrics(completed_df, task)
+
+        st.markdown("**Interim mean ± std**")
+        _render_interim_summary(completed_df, task)
 
     if st.button("Manual refresh"):
         st.rerun()
