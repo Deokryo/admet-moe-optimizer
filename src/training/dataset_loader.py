@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import pandas as pd
+from pandas.errors import ParserError
+from requests.exceptions import ConnectionError as RequestsConnectionError
 
 
 ADME_DATASETS = {"Solubility_AqSolDB", "Lipophilicity_AstraZeneca", "BBB_Martins"}
@@ -40,7 +43,38 @@ def _standardize_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return standardized.reset_index(drop=True)
 
 
-def load_tdc_dataset(dataset_name: str) -> DatasetSplit:
+def _remove_cached_dataset(dataset_name: str, data_dir: str) -> None:
+    """Remove possibly corrupted local TDC cache files for a dataset."""
+    path = Path(data_dir)
+    stem = dataset_name.lower()
+    for suffix in (".tab", ".csv", ".txt", ".pkl"):
+        candidate = path / f"{stem}{suffix}"
+        if candidate.exists():
+            candidate.unlink()
+
+
+def _friendly_load_error(dataset_name: str, data_dir: str, exc: Exception) -> Exception:
+    """Convert common TDC loading failures into actionable messages."""
+    message = str(exc)
+    if isinstance(exc, RequestsConnectionError) or "NameResolutionError" in message or "getaddrinfo failed" in message:
+        return RuntimeError(
+            f"TDC dataset '{dataset_name}' 다운로드에 실패했습니다. "
+            "dataverse.harvard.edu DNS/네트워크 연결을 확인한 뒤 다시 실행하세요. "
+            f"이미 다운로드된 파일이 있다면 --tdc-data-dir {data_dir} 경로를 확인하세요."
+        )
+    if isinstance(exc, ParserError) or "EOF inside string" in message or "Error tokenizing data" in message:
+        return RuntimeError(
+            f"TDC dataset '{dataset_name}'의 로컬 캐시 파일이 깨진 것으로 보입니다. "
+            f"`data/{dataset_name.lower()}.tab` 같은 부분 다운로드 파일을 삭제하거나 "
+            "`--force-redownload` 옵션으로 다시 다운로드하세요."
+        )
+    return ValueError(
+        f"Could not load TDC dataset '{dataset_name}'. "
+        "Dataset name, local cache, and PyTDC version을 확인하세요."
+    )
+
+
+def load_tdc_dataset(dataset_name: str, data_dir: str = "./data", force_redownload: bool = False) -> DatasetSplit:
     """Load a TDC ADME/Tox dataset and return scaffold splits.
 
     Raises a friendly error when the dataset name is not available in the local
@@ -59,12 +93,13 @@ def load_tdc_dataset(dataset_name: str) -> DatasetSplit:
         supported = sorted(ADME_DATASETS | TOX_DATASETS)
         raise ValueError(f"Unsupported dataset '{dataset_name}'. Supported datasets: {supported}")
 
+    if force_redownload:
+        _remove_cached_dataset(dataset_name, data_dir)
+
     try:
-        dataset = dataset_cls(name=dataset_name)
+        dataset = dataset_cls(name=dataset_name, path=data_dir)
     except Exception as exc:
-        raise ValueError(
-            f"Could not load TDC dataset '{dataset_name}'. Check the exact dataset name for your PyTDC version."
-        ) from exc
+        raise _friendly_load_error(dataset_name, data_dir, exc) from exc
 
     try:
         split = dataset.get_split(method="scaffold")
@@ -76,4 +111,3 @@ def load_tdc_dataset(dataset_name: str) -> DatasetSplit:
         valid=_standardize_frame(split["valid"]),
         test=_standardize_frame(split["test"]),
     )
-

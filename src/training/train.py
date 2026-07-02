@@ -38,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--checkpoint-dir", default="checkpoints")
+    parser.add_argument("--tdc-data-dir", default="./data")
+    parser.add_argument("--force-redownload", action="store_true")
     return parser.parse_args()
 
 
@@ -138,7 +140,7 @@ def main() -> None:
     """Run full training, validation checkpointing, and final test evaluation."""
     args = parse_args()
     task_type = args.task or DATASET_TASKS[args.dataset]
-    split = load_tdc_dataset(args.dataset)
+    split = load_tdc_dataset(args.dataset, data_dir=args.tdc_data_dir, force_redownload=args.force_redownload)
 
     train_graphs = dataframe_to_graphs(split.train)
     valid_graphs = dataframe_to_graphs(split.valid)

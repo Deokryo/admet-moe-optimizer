@@ -74,6 +74,23 @@ checkpoints/{dataset_name}/config.json
 checkpoints/{dataset_name}/metrics.json
 ```
 
+### TDC 다운로드/캐시 문제 해결
+
+`dataverse.harvard.edu` DNS 오류가 나면 네트워크 연결을 확인한 뒤 다시 실행합니다.
+
+로컬 `data/*.tab` 파일이 부분 다운로드되어 `EOF inside string` 또는 `Error tokenizing data`가 나면 `--force-redownload`를 붙여 다시 받습니다.
+
+```powershell
+python -m src.training.train --dataset AMES --task classification --epochs 1 --force-redownload
+python -m src.training.train --dataset hERG_Karim --task classification --epochs 1 --force-redownload
+```
+
+데이터 저장 위치를 바꾸고 싶으면:
+
+```powershell
+python -m src.training.train --dataset AMES --task classification --epochs 1 --tdc-data-dir ./data
+```
+
 ## GNN 학습 결과 Dashboard
 
 학습 후 앱을 실행하고 sidebar에서 `GNN Training Dashboard`를 선택합니다.
