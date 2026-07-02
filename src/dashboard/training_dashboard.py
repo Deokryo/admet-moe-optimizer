@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 
 DATASETS = [
@@ -255,19 +255,11 @@ def _render_dataset_card(root: Path, dataset: str, task: str) -> None:
             _plot_line(history, ["valid_accuracy"], "Valid Accuracy")
 
 
-def _install_auto_refresh(interval_seconds: int) -> None:
-    """Install a tiny browser-side auto refresh script."""
-    interval_ms = max(interval_seconds, 2) * 1000
-    components.html(
-        f"""
-        <script>
-        setTimeout(function() {{
-            window.parent.location.reload();
-        }}, {interval_ms});
-        </script>
-        """,
-        height=0,
-    )
+def _server_side_auto_refresh(interval_seconds: int) -> None:
+    """Force a Streamlit rerun after an interval."""
+    with st.spinner(f"{interval_seconds}초 후 학습 현황을 새로고침합니다..."):
+        time.sleep(interval_seconds)
+    st.rerun()
 
 
 def render_training_dashboard(checkpoint_root: str = "checkpoints") -> None:
@@ -282,7 +274,6 @@ def render_training_dashboard(checkpoint_root: str = "checkpoints") -> None:
         auto_refresh = st.checkbox("학습 현황 자동 새로고침", value=False)
         refresh_seconds = st.slider("새로고침 간격(초)", min_value=2, max_value=60, value=10, step=1)
         if auto_refresh:
-            _install_auto_refresh(refresh_seconds)
             st.caption(f"{refresh_seconds}초마다 dashboard를 새로고침합니다.")
 
     summary = pd.DataFrame([_summary_row(root, item["dataset"], item["task"]) for item in DATASETS])
@@ -292,3 +283,6 @@ def render_training_dashboard(checkpoint_root: str = "checkpoints") -> None:
     st.subheader("Endpoint별 상세 결과")
     for item in DATASETS:
         _render_dataset_card(root, item["dataset"], item["task"])
+
+    if auto_refresh:
+        _server_side_auto_refresh(refresh_seconds)
