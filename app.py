@@ -58,11 +58,62 @@ ABNORMAL_ENDPOINT_TO_PREDICTOR = {
 }
 
 
+def _as_bool(value: Any) -> bool:
+    """Parse CSV boolean-ish values."""
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in {"true", "1", "yes"}
+
+
+def _resolve_cv_best_checkpoint(dataset_name: str, cv_root: Path = Path("checkpoints_cv")) -> tuple[Path | None, str | None]:
+    """Return the best available CV fold checkpoint for a dataset."""
+    comparison_path = Path("experiments") / "gnn_10fold_comparison.csv"
+    if not comparison_path.exists():
+        return None, None
+    try:
+        comparison = pd.read_csv(comparison_path)
+    except Exception:
+        return None, None
+    if "dataset" not in comparison.columns:
+        return None, None
+    rows = comparison[comparison["dataset"] == dataset_name]
+    if rows.empty or "model_type" not in rows.columns:
+        return None, None
+    if "is_best_model" in rows.columns:
+        best_rows = rows[rows["is_best_model"].map(_as_bool)]
+        if not best_rows.empty:
+            rows = best_rows
+    row = rows.iloc[0]
+    model_type = str(row["model_type"])
+    summary_path = cv_root / dataset_name / model_type / "cv_summary.json"
+    best_fold: int | None = None
+    try:
+        import json
+
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        task = str(summary.get("task", row.get("task", "regression")))
+        metric = "mae" if task == "regression" else "auroc"
+        fold_metrics = [item for item in summary.get("fold_metrics", []) if item.get(metric) is not None]
+        if fold_metrics:
+            chosen = min(fold_metrics, key=lambda item: float(item[metric])) if task == "regression" else max(fold_metrics, key=lambda item: float(item[metric]))
+            best_fold = int(chosen["fold"])
+    except Exception:
+        best_fold = None
+
+    candidate_folds = [best_fold] if best_fold is not None else []
+    candidate_folds.extend(fold for fold in range(10) if fold not in candidate_folds)
+    for fold in candidate_folds:
+        checkpoint_path = cv_root / dataset_name / model_type / f"fold_{fold}" / "best.pt"
+        if checkpoint_path.exists():
+            return checkpoint_path, f"GNN CV Best ({model_type}/fold_{fold})"
+    return None, None
+
+
 def build_predictors(predictor_mode: str, checkpoint_root: Path = Path("checkpoints")) -> tuple[list[Predictor], dict[str, str]]:
     """Build endpoint predictors with optional GNN checkpoint loading."""
     dummy_by_name = {predictor.name: predictor for predictor in build_dummy_predictors()}
     sources = {name: "Dummy / Heuristic" for name in dummy_by_name}
-    if predictor_mode != "GNN Checkpoint":
+    if predictor_mode == "Dummy / Heuristic":
         return list(dummy_by_name.values()), sources
 
     predictors: list[Predictor] = []
@@ -71,7 +122,13 @@ def build_predictors(predictor_mode: str, checkpoint_root: Path = Path("checkpoi
         if dataset_name is None:
             predictors.append(fallback)
             continue
+        source_label = "GNN Checkpoint"
         checkpoint_path = checkpoint_root / dataset_name / "best.pt"
+        if predictor_mode == "Auto best per endpoint":
+            cv_checkpoint, cv_source = _resolve_cv_best_checkpoint(dataset_name)
+            if cv_checkpoint is not None and cv_source is not None:
+                checkpoint_path = cv_checkpoint
+                source_label = cv_source
         try:
             predictor = GNNPredictor(dataset_name=dataset_name, checkpoint_path=checkpoint_path)
         except Exception as exc:
@@ -82,7 +139,7 @@ def build_predictors(predictor_mode: str, checkpoint_root: Path = Path("checkpoi
             predictors.append(fallback)
             continue
         predictors.append(predictor)
-        sources[endpoint_name] = "GNN Checkpoint"
+        sources[endpoint_name] = source_label
     return predictors, sources
 
 
@@ -372,7 +429,8 @@ def _render_saliency_section(result: dict[str, Any]) -> None:
     endpoint = st.selectbox("Saliency를 확인할 endpoint", endpoints)
     predictor_name = ABNORMAL_ENDPOINT_TO_PREDICTOR[endpoint]
     predictor = result.get("predictor_objects", {}).get(predictor_name)
-    prefer_gnn = result.get("predictor_sources", {}).get(predictor_name) == "GNN Checkpoint"
+    predictor_source = str(result.get("predictor_sources", {}).get(predictor_name, ""))
+    prefer_gnn = predictor_source.startswith("GNN")
 
     try:
         saliency = explain_endpoint_saliency(
@@ -631,7 +689,7 @@ def render_molecule_optimizer() -> None:
         smiles = st.text_input("초기 SMILES", value="CC(C)Oc1ccc(Cl)cc1C(=O)O")
         target_options = ["비-CNS 타깃", "CNS 타깃"]
         target_context = st.radio("타깃 맥락", target_options, index=0)
-        predictor_mode = st.radio("Predictor mode", ["Dummy / Heuristic", "GNN Checkpoint"], index=0)
+        predictor_mode = st.radio("Predictor mode", ["Dummy / Heuristic", "GNN Checkpoint", "Auto best per endpoint"], index=0)
         execution_mode = st.radio("실행 모드", ["단일 후보 생성", "반복형 최적화"], index=0)
         top_k = st.slider("추천 후보 수 Top-K", min_value=3, max_value=20, value=8, step=1)
         st.markdown("**목표 물성 범위**")

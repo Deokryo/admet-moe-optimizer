@@ -9,7 +9,7 @@ from rdkit import Chem
 
 from src.predictors.base import Prediction
 from src.training.featurizer import smiles_to_data
-from src.training.model import MolecularGNN
+from src.training.model import build_molecular_gnn
 
 
 DATASET_TO_ENDPOINT = {
@@ -48,7 +48,8 @@ class GNNPredictor:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.torch = torch
 
-        self.model = MolecularGNN(
+        self.model = build_molecular_gnn(
+            model_type=str(self.config.get("model_type", "gine")),
             atom_feature_dim=int(self.config["atom_feature_dim"]),
             bond_feature_dim=int(self.config["bond_feature_dim"]),
             hidden_dim=int(self.config.get("hidden_dim", 128)),
@@ -89,4 +90,3 @@ class GNNPredictor:
             confidence=0.8,
             interpretation=self.interpretation,
         )
-

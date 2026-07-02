@@ -1,4 +1,4 @@
-"""GNN training result dashboard."""
+"""Streamlit dashboard for single-run and 10-fold GNN training results."""
 
 from __future__ import annotations
 
@@ -11,6 +11,13 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from src.reporting.cv_tables import (
+    build_detailed_metric_table,
+    build_main_comparison_table,
+    export_markdown_table,
+)
+from src.training.cv_summary import build_comparison_csv
+
 
 DATASETS = [
     {"dataset": "Solubility_AqSolDB", "task": "regression"},
@@ -20,9 +27,11 @@ DATASETS = [
     {"dataset": "AMES", "task": "classification"},
 ]
 
+MODEL_TYPES = ["gine", "attentivefp", "dmpnn", "cmpnn"]
+
 
 def _read_json(path: Path) -> dict[str, Any] | None:
-    """Read JSON with graceful failure."""
+    """Read a JSON file without breaking the dashboard on malformed data."""
     if not path.exists():
         return None
     try:
@@ -107,7 +116,7 @@ def _format_value(value: Any) -> str:
 
 
 def _plot_line(history: pd.DataFrame, columns: list[str], title: str) -> None:
-    """Render a line chart using plotly with Streamlit fallback."""
+    """Render a line chart using Plotly with Streamlit fallback."""
     available = [column for column in columns if column in history.columns and history[column].notna().any()]
     if not available:
         st.info(f"{title} 데이터가 없습니다.")
@@ -133,6 +142,7 @@ def _config_frame(config: dict[str, Any] | None) -> pd.DataFrame:
         "dataset",
         "task_type",
         "task",
+        "model_type",
         "hidden_dim",
         "num_layers",
         "dropout",
@@ -163,7 +173,7 @@ def _modified_time(path: Path) -> str:
 
 
 def _summary_row(root: Path, dataset: str, task: str) -> dict[str, Any]:
-    """Build one summary table row."""
+    """Build one single-run summary table row."""
     dataset_dir = root / dataset
     metrics_path = dataset_dir / "metrics.json"
     metrics = _read_json(metrics_path)
@@ -190,7 +200,7 @@ def _summary_row(root: Path, dataset: str, task: str) -> dict[str, Any]:
 
 
 def _render_dataset_card(root: Path, dataset: str, task: str) -> None:
-    """Render status, config, metrics, and charts for one dataset."""
+    """Render status, config, metrics, and charts for one single-run dataset."""
     dataset_dir = root / dataset
     checkpoint_path = dataset_dir / "best.pt"
     metrics_path = dataset_dir / "metrics.json"
@@ -222,7 +232,10 @@ def _render_dataset_card(root: Path, dataset: str, task: str) -> None:
                 {"항목": "Best valid metric", "값": _format_value(best_metric)},
                 {"항목": "Last metrics update", "값": _modified_time(metrics_path)},
                 {"항목": "Test metric 요약", "값": ", ".join(f"{k}={_format_value(v)}" for k, v in test_metrics.items()) or "-"},
-                {"항목": "Predictor 상태", "값": "GNN 사용 가능" if checkpoint_path.exists() and effective_config else "Dummy Predictor로 fallback"},
+                {
+                    "항목": "Predictor 상태",
+                    "값": "GNN 사용 가능" if checkpoint_path.exists() and effective_config else "Dummy Predictor로 fallback",
+                },
             ]
         )
         st.dataframe(status_table, use_container_width=True, hide_index=True)
@@ -255,9 +268,105 @@ def _render_dataset_card(root: Path, dataset: str, task: str) -> None:
             _plot_line(history, ["valid_accuracy"], "Valid Accuracy")
 
 
+def _load_cv_summary(cv_root: Path, dataset: str, model_type: str) -> dict[str, Any] | None:
+    """Load one CV summary file."""
+    return _read_json(cv_root / dataset / model_type / "cv_summary.json")
+
+
+def _cv_summary_frame(cv_root: Path) -> pd.DataFrame:
+    """Load or rebuild the 10-fold comparison CSV."""
+    comparison_path = Path("experiments") / "gnn_10fold_comparison.csv"
+    if comparison_path.exists():
+        try:
+            return pd.read_csv(comparison_path)
+        except Exception as exc:
+            st.warning(f"CV comparison CSV를 읽지 못했습니다: {exc}")
+    try:
+        return build_comparison_csv(cv_root=str(cv_root), output_path=str(comparison_path))
+    except Exception as exc:
+        st.warning(f"CV summary를 생성하지 못했습니다: {exc}")
+        return pd.DataFrame()
+
+
+def _render_cv_dashboard(cv_root: Path) -> None:
+    """Render 10-fold cross-validation comparison results."""
+    st.subheader("10-Fold CV 비교")
+    st.caption("5개 endpoint와 4개 GNN 계열(GINEConv, AttentiveFP, D-MPNN, CMPNN)의 fold별 성능을 비교합니다.")
+
+    summary_df = _cv_summary_frame(cv_root)
+    if summary_df.empty:
+        st.info("아직 10-Fold CV 학습 결과가 없습니다.")
+        st.code(
+            "python scripts/run_10fold_gnn_cv.py --all --epochs 5 --device cpu --skip-existing",
+            language="bash",
+        )
+        return
+
+    total_expected = len(DATASETS) * len(MODEL_TYPES)
+    completed_runs = len(summary_df)
+    total_completed_folds = int(pd.to_numeric(summary_df.get("completed_folds", 0), errors="coerce").fillna(0).sum())
+    progress = min(completed_runs / total_expected, 1.0) if total_expected else 0.0
+    st.progress(progress, text=f"CV run 완료: {completed_runs}/{total_expected}, fold 완료 합계: {total_completed_folds}")
+
+    main_table = build_main_comparison_table(summary_df)
+    st.markdown("**모델 비교 요약**")
+    st.dataframe(main_table, use_container_width=True, hide_index=True)
+    st.download_button(
+        "요약 CSV 다운로드",
+        data=summary_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name="gnn_10fold_comparison.csv",
+        mime="text/csv",
+    )
+    st.download_button(
+        "요약 Markdown 다운로드",
+        data=export_markdown_table(main_table).encode("utf-8"),
+        file_name="gnn_10fold_comparison.md",
+        mime="text/markdown",
+    )
+
+    dataset_names = [item["dataset"] for item in DATASETS]
+    selected_dataset = st.selectbox("상세 확인 dataset", dataset_names)
+    detail_table = build_detailed_metric_table(summary_df, selected_dataset)
+    st.markdown("**Dataset별 상세 metric**")
+    st.dataframe(detail_table, use_container_width=True, hide_index=True)
+
+    for model_type in MODEL_TYPES:
+        summary = _load_cv_summary(cv_root, selected_dataset, model_type)
+        label = model_type.upper()
+        with st.expander(f"{selected_dataset} / {label}", expanded=False):
+            if not summary:
+                st.info("아직 학습 결과가 없습니다.")
+                continue
+            fold_metrics = summary.get("fold_metrics") or []
+            if not fold_metrics:
+                st.warning("fold metric이 없습니다.")
+                continue
+            fold_df = pd.DataFrame(fold_metrics)
+            st.dataframe(fold_df, use_container_width=True, hide_index=True)
+
+            task = str(summary.get("task", "regression"))
+            chart_metrics = ["mae", "rmse", "r2"] if task == "regression" else ["auroc", "auprc", "f1", "accuracy"]
+            chart_cols = [metric for metric in chart_metrics if metric in fold_df.columns]
+            if chart_cols and "fold" in fold_df.columns:
+                chart_df = fold_df[["fold", *chart_cols]].copy()
+                try:
+                    import plotly.express as px
+
+                    long_df = chart_df.melt(id_vars="fold", value_vars=chart_cols, var_name="metric", value_name="value")
+                    fig = px.line(long_df, x="fold", y="value", color="metric", markers=True, title=f"{label} fold별 metric")
+                    fig.update_layout(height=340)
+                    st.plotly_chart(fig, use_container_width=True)
+                except Exception:
+                    st.line_chart(chart_df.set_index("fold"))
+
+            failed_folds = summary.get("failed_folds") or []
+            if failed_folds:
+                st.warning(f"실패 fold: {failed_folds}")
+
+
 def _server_side_auto_refresh(interval_seconds: int) -> None:
     """Force a Streamlit rerun after an interval."""
-    with st.spinner(f"{interval_seconds}초 후 학습 현황을 새로고침합니다..."):
+    with st.spinner(f"{interval_seconds}초 뒤 학습 현황을 새로고침합니다..."):
         time.sleep(interval_seconds)
     st.rerun()
 
@@ -265,6 +374,7 @@ def _server_side_auto_refresh(interval_seconds: int) -> None:
 def render_training_dashboard(checkpoint_root: str = "checkpoints") -> None:
     """Render the GNN training dashboard in Streamlit."""
     root = Path(checkpoint_root)
+    cv_root = Path("checkpoints_cv")
     st.title("GNN 학습 결과 대시보드")
     st.caption("endpoint-specific GNN expert의 checkpoint, config, 학습 곡선, 검증 성능, test metric을 확인합니다.")
 
@@ -276,13 +386,18 @@ def render_training_dashboard(checkpoint_root: str = "checkpoints") -> None:
         if auto_refresh:
             st.caption(f"{refresh_seconds}초마다 dashboard를 새로고침합니다.")
 
-    summary = pd.DataFrame([_summary_row(root, item["dataset"], item["task"]) for item in DATASETS])
-    st.subheader("5개 모델 비교 요약")
-    st.dataframe(summary, use_container_width=True, hide_index=True)
+    single_tab, cv_tab = st.tabs(["Single Run Results", "10-Fold CV Comparison"])
+    with single_tab:
+        summary = pd.DataFrame([_summary_row(root, item["dataset"], item["task"]) for item in DATASETS])
+        st.subheader("5개 모델 비교 요약")
+        st.dataframe(summary, use_container_width=True, hide_index=True)
 
-    st.subheader("Endpoint별 상세 결과")
-    for item in DATASETS:
-        _render_dataset_card(root, item["dataset"], item["task"])
+        st.subheader("Endpoint별 상세 결과")
+        for item in DATASETS:
+            _render_dataset_card(root, item["dataset"], item["task"])
+
+    with cv_tab:
+        _render_cv_dashboard(cv_root)
 
     if auto_refresh:
         _server_side_auto_refresh(refresh_seconds)
