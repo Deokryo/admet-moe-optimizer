@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Local IDE / agent metadata
+.vscode/
+.idea/
+.agents/
+
+# TDC downloaded datasets can be regenerated
+data/
+
+# Model artifacts can be large; keep them out of git
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

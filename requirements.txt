@@ -1,0 +1,20 @@
+# Python >=3.10,<3.12 권장.
+# PyTDC는 Windows에서 cellxgene-census/tiledbsoma dependency build가 실패할 수 있어
+# requirements.txt에서 제외하고 README의 별도 no-deps 설치 절차를 사용합니다.
+streamlit>=1.36
+rdkit>=2023.9
+pandas>=2.0
+numpy>=1.24,<2.0
+scikit-learn==1.2.2
+pillow>=10.0
+networkx>=3.0
+matplotlib>=3.7
+torch>=2.1
+torch-geometric>=2.4
+plotly>=5.20
+tqdm>=4.66
+requests>=2.31
+openpyxl>=3.1
+fuzzywuzzy>=0.18
+seaborn>=0.12
+huggingface-hub>=0.20.3,<1.0
