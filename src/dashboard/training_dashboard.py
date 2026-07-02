@@ -300,6 +300,35 @@ def _run_status_path(cv_root: Path, dataset: str, model_type: str) -> Path:
     return cv_root / dataset / model_type / "run_status.json"
 
 
+def _detected_cv_runs(cv_root: Path) -> list[dict[str, Any]]:
+    """Return discovered CV run_status files ordered by usefulness for monitoring."""
+    runs: list[dict[str, Any]] = []
+    for status_path in cv_root.glob("*/*/run_status.json"):
+        status = read_json_safe(status_path)
+        if not status:
+            continue
+        dataset = str(status.get("dataset") or status_path.parents[1].name)
+        model_type = str(status.get("model_type") or status_path.parent.name)
+        run_status = str(status.get("status", "-"))
+        current_fold = status.get("current_fold", "-")
+        current_epoch = status.get("current_epoch", 0)
+        epochs = status.get("epochs", "-")
+        updated_at = str(status.get("updated_at", ""))
+        priority = {"running": 0, "pending": 1, "failed": 2, "completed": 3, "stopped": 4}.get(run_status, 5)
+        runs.append(
+            {
+                "dataset": dataset,
+                "model_type": model_type,
+                "status": status,
+                "status_text": run_status,
+                "updated_at": updated_at,
+                "priority": priority,
+                "label": f"{run_status} | {dataset} / {model_type} | fold {current_fold} | epoch {current_epoch}/{epochs} | {updated_at}",
+            }
+        )
+    return sorted(runs, key=lambda item: (item["priority"], str(item["updated_at"])), reverse=False)
+
+
 def _is_running(status: dict[str, Any] | None) -> bool:
     """Return whether a run status indicates active training."""
     return bool(status and status.get("status") == "running")
@@ -542,11 +571,27 @@ def _plot_live_epoch_metrics(live_df: pd.DataFrame) -> None:
 def _render_live_monitor(cv_root: Path) -> None:
     """Render live status, fold table, curves, and interim results."""
     st.markdown("### Live 10-Fold Monitor")
+    detected_runs = _detected_cv_runs(cv_root)
+    if detected_runs:
+        labels = ["Manual selection", *[run["label"] for run in detected_runs]]
+        run_label = st.selectbox("감지된 CV run 선택", labels, index=1, key="cv_monitor_detected_run")
+    else:
+        run_label = "Manual selection"
+
     left, right, third = st.columns([1, 1, 1])
-    with left:
-        dataset = st.selectbox("Monitor dataset", [item["dataset"] for item in DATASETS], key="cv_monitor_dataset")
-    with right:
-        model_type = st.selectbox("Monitor model", MODEL_TYPES, key="cv_monitor_model")
+    if run_label == "Manual selection":
+        with left:
+            dataset = st.selectbox("Monitor dataset", [item["dataset"] for item in DATASETS], key="cv_monitor_dataset")
+        with right:
+            model_type = st.selectbox("Monitor model", MODEL_TYPES, key="cv_monitor_model")
+    else:
+        selected_run = detected_runs[labels.index(run_label) - 1]
+        dataset = str(selected_run["dataset"])
+        model_type = str(selected_run["model_type"])
+        with left:
+            st.text_input("Monitor dataset", value=dataset, disabled=True, key="cv_monitor_dataset_detected")
+        with right:
+            st.text_input("Monitor model", value=model_type, disabled=True, key="cv_monitor_model_detected")
     with third:
         refresh_interval = st.selectbox("Refresh interval", ["manual", "5 seconds", "10 seconds", "30 seconds"], key="cv_monitor_refresh")
     auto_refresh = st.checkbox("Auto refresh", value=False, key="cv_monitor_auto")

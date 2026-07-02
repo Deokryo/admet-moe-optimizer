@@ -20,6 +20,7 @@ from src.training.dataset_loader import load_tdc_dataset
 from src.training.live_logging import utc_now_iso
 from src.training.run_status import (
     initial_run_status,
+    load_run_status,
     mark_fold_completed,
     mark_fold_failed,
     mark_fold_started,
@@ -62,6 +63,19 @@ def _resolve_device(device: str) -> str:
     return device
 
 
+def _prepare_pending_status(args: argparse.Namespace, dataset: str, model_type: str) -> None:
+    """Create a pending run status so --all jobs are visible before training starts."""
+    task = args.task or DATASET_TASKS[dataset]
+    root = Path(args.checkpoint_dir) / dataset / model_type
+    status_path = root / "run_status.json"
+    existing = load_run_status(status_path)
+    if existing and existing.get("status") == "running":
+        return
+    status = initial_run_status(dataset=dataset, task=task, model_type=model_type, num_folds=args.num_folds, epochs=args.epochs)
+    status.update({"status": "pending", "last_message": "Queued in --all benchmark"})
+    write_run_status(status_path, status)
+
+
 def _run_dataset_model(args: argparse.Namespace, dataset: str, model_type: str) -> None:
     """Run CV for one dataset/model pair."""
     task = args.task or DATASET_TASKS[dataset]
@@ -78,7 +92,16 @@ def _run_dataset_model(args: argparse.Namespace, dataset: str, model_type: str) 
     root = Path(args.checkpoint_dir) / dataset / model_type
     root.mkdir(parents=True, exist_ok=True)
     status_path = root / "run_status.json"
-    status = initial_run_status(dataset=dataset, task=task, model_type=model_type, num_folds=args.num_folds, epochs=args.epochs)
+    status = load_run_status(status_path) or initial_run_status(dataset=dataset, task=task, model_type=model_type, num_folds=args.num_folds, epochs=args.epochs)
+    status.update(
+        {
+            "dataset": dataset,
+            "task": task,
+            "model_type": model_type,
+            "num_folds": args.num_folds,
+            "epochs": args.epochs,
+        }
+    )
     status.update({"status": "running", "last_message": "10-fold CV run started"})
     write_run_status(status_path, status)
 
@@ -149,6 +172,8 @@ def main() -> None:
     args = parse_args()
     if args.all:
         jobs = [(dataset, model_type) for dataset in DATASET_TASKS for model_type in MODEL_TYPES]
+        for dataset, model_type in jobs:
+            _prepare_pending_status(args, dataset, model_type)
     else:
         if not args.dataset or not args.model:
             raise SystemExit("--dataset and --model are required unless --all is used.")
