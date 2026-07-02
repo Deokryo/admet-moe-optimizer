@@ -51,3 +51,24 @@ def score_candidate(
         + 0.10 * (1.0 - ames)
     )
     return float(score), similarity
+
+
+def score_molecule(
+    descriptors: dict[str, float],
+    predictions: dict[str, Prediction],
+    similarity_to_seed: float = 1.0,
+) -> float:
+    """Calculate the same MVP multi-objective score for an already evaluated molecule."""
+    sol = float(predictions["Solubility Expert"].value)
+    logp = float(predictions["Lipophilicity Expert"].value)
+    herg = float(predictions["hERG Expert"].value)
+    ames = float(predictions["AMES Expert"].value)
+    score = (
+        0.20 * _solubility_desirability(sol)
+        + 0.20 * _range_desirability(logp, 1.0, 3.0, softness=2.0)
+        + 0.20 * float(descriptors["qed"])
+        + 0.15 * similarity_to_seed
+        + 0.15 * (1.0 - herg)
+        + 0.10 * (1.0 - ames)
+    )
+    return float(score)

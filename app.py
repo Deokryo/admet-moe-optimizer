@@ -9,7 +9,8 @@ import pandas as pd
 import streamlit as st
 
 from src.agents.abnormality_gate import AbnormalityConfig, AbnormalityGate
-from src.agents.report_agent import build_report
+from src.agents.optimization_loop import OptimizationLoop, OptimizationLoopResult
+from src.agents.report_agent import build_report, generate_optimization_loop_report
 from src.agents.saliency import HeuristicSaliencyAnalyzer, explain_endpoint_saliency
 from src.agents.scaffold_gate import ScaffoldGate
 from src.chemistry.descriptors import calculate_descriptors
@@ -148,6 +149,169 @@ def _delta_table(original: dict[str, float], records: list[dict[str, Any]]) -> p
             row[f"변화량 {key}"] = round(float(desc[key] - original[key]), 4)
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def _loop_prediction_frame(predictions: dict[str, Any]) -> pd.DataFrame:
+    """Convert loop step predictions into a display table."""
+    rows = []
+    for name, prediction in predictions.items():
+        rows.append(
+            {
+                "Endpoint": ENDPOINT_LABELS.get(name, name),
+                "Task": TASK_LABELS.get(prediction.task, prediction.task),
+                "Value": round(float(prediction.value), 4),
+                "Unit": prediction.unit or "-",
+                "Interpretation": prediction.interpretation,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _abnormality_frame(abnormalities: list[Any]) -> pd.DataFrame:
+    """Convert abnormalities to a DataFrame."""
+    return pd.DataFrame([item.to_dict() for item in abnormalities]) if abnormalities else pd.DataFrame()
+
+
+def _loop_summary_rows(result: OptimizationLoopResult) -> list[dict[str, Any]]:
+    """Build top summary rows for a loop result."""
+    final_step = result.steps[-1] if result.steps else None
+    final_abnormal = []
+    final_score = None
+    if final_step:
+        final_abnormal = [getattr(item, "endpoint", "-") for item in final_step.abnormal_endpoints]
+        final_score = final_step.selected_candidate_score
+    return [
+        {"항목": "초기 SMILES", "값": result.initial_smiles},
+        {"항목": "최종 SMILES", "값": result.final_smiles},
+        {"항목": "성공 여부", "값": result.success},
+        {"항목": "종료 이유", "값": result.stop_reason},
+        {"항목": "총 iteration 수", "값": result.total_iterations},
+        {"항목": "최종 score", "값": round(float(final_score), 4) if final_score is not None else "-"},
+        {"항목": "최종 abnormal endpoint", "값": ", ".join(final_abnormal) if final_abnormal else "없음"},
+    ]
+
+
+def _render_loop_result(result: OptimizationLoopResult) -> None:
+    """Render iterative optimization results."""
+    st.subheader("반복형 최적화 요약")
+    st.dataframe(pd.DataFrame(_loop_summary_rows(result)), use_container_width=True, hide_index=True)
+
+    if result.steps:
+        path_rows = []
+        for step in result.steps:
+            path_rows.append(
+                {
+                    "Iteration": step.iteration,
+                    "Input SMILES": step.canonical_input_smiles,
+                    "Selected endpoint": step.selected_endpoint or "-",
+                    "Selected candidate": step.selected_candidate_smiles or "-",
+                    "Score": round(float(step.selected_candidate_score), 4) if step.selected_candidate_score is not None else "-",
+                    "Improvement": round(float(step.improvement), 4) if step.improvement is not None else "-",
+                    "Stop reason": step.stop_reason or "-",
+                }
+            )
+        st.subheader("분자 변화 경로")
+        st.dataframe(pd.DataFrame(path_rows), use_container_width=True, hide_index=True)
+
+        metric_rows = []
+        for step in result.steps:
+            preds = step.predictions
+            if not preds:
+                continue
+            metric_rows.append(
+                {
+                    "iteration": step.iteration,
+                    "Solubility": float(preds["Solubility Expert"].value),
+                    "Lipophilicity": float(preds["Lipophilicity Expert"].value),
+                    "BBB": float(preds["BBB Expert"].value),
+                    "hERG": float(preds["hERG Expert"].value),
+                    "AMES": float(preds["AMES Expert"].value),
+                }
+            )
+        if metric_rows:
+            st.subheader("iteration별 endpoint 변화")
+            st.line_chart(pd.DataFrame(metric_rows).set_index("iteration"))
+
+    for step in result.steps:
+        title = f"Step {step.iteration}: {step.selected_endpoint or '정상 범위'}"
+        if step.selected_candidate_smiles:
+            title += f" -> {step.selected_candidate_smiles}"
+        with st.expander(title, expanded=step.iteration == 1):
+            col_in, col_out = st.columns(2)
+            input_mol = mol_from_smiles(step.canonical_input_smiles)
+            if input_mol is not None:
+                with col_in:
+                    st.markdown("**입력 분자**")
+                    st.image(mol_to_image(input_mol, size=(320, 240)), caption=step.canonical_input_smiles)
+            if step.selected_candidate_smiles:
+                selected_mol = mol_from_smiles(step.selected_candidate_smiles)
+                if selected_mol is not None:
+                    with col_out:
+                        st.markdown("**선택 후보**")
+                        st.image(mol_to_image(selected_mol, size=(320, 240)), caption=step.selected_candidate_smiles)
+
+            if step.predictions:
+                st.markdown("**5 Expert 예측**")
+                st.dataframe(_loop_prediction_frame(step.predictions), use_container_width=True, hide_index=True)
+            if step.abnormal_endpoints:
+                st.markdown("**이상 endpoint**")
+                st.dataframe(_abnormality_frame(step.abnormal_endpoints), use_container_width=True, hide_index=True)
+            else:
+                st.success("모든 endpoint가 허용 범위에 들어와 최적화를 종료했습니다.")
+
+            st.markdown(f"**이번 단계에서 선택한 이상 endpoint:** {step.selected_endpoint or '-'}")
+            if step.saliency_result:
+                atom_scores = step.saliency_result.get("atom_scores", {})
+                top_atoms = step.saliency_result.get("top_atoms", [])
+                source = step.saliency_result.get("source", "-")
+                st.markdown(f"**편집 근거 saliency:** {source}, top atoms {top_atoms}")
+                if isinstance(atom_scores, dict) and atom_scores:
+                    image = draw_saliency_molecule(
+                        step.canonical_input_smiles,
+                        {int(key): float(value) for key, value in atom_scores.items()},
+                        color=endpoint_color(step.selected_endpoint or ""),
+                    )
+                    if image is not None:
+                        st.image(image, caption="Saliency highlighted molecule")
+                substructures = step.saliency_result.get("substructures", [])
+                if isinstance(substructures, list) and substructures:
+                    st.dataframe(pd.DataFrame(substructures), use_container_width=True, hide_index=True)
+
+            if step.scaffold_decision:
+                st.markdown("**Scaffold gate decision**")
+                st.dataframe(pd.DataFrame([step.scaffold_decision]), use_container_width=True, hide_index=True)
+
+            if step.generation_result:
+                st.markdown("**후보 생성 상태**")
+                status_rows = [
+                    {"항목": "CReM used", "값": step.generation_result.used_crem},
+                    {"항목": "Rule-based used", "값": step.generation_result.used_rule_based},
+                    {"항목": "CReM status", "값": step.generation_result.crem_status},
+                    {"항목": "Rule-based status", "값": step.generation_result.rule_based_status},
+                    {"항목": "Generated candidates", "값": len(step.generation_result.candidates)},
+                ]
+                st.dataframe(pd.DataFrame(status_rows), use_container_width=True, hide_index=True)
+                for warning in step.generation_result.warnings:
+                    st.warning(warning)
+
+            if step.generated_candidates:
+                st.markdown("**후보 Top-K**")
+                st.dataframe(_candidate_table(step.generated_candidates[:10]), use_container_width=True, hide_index=True)
+
+            st.markdown(f"**선택 이유:** {step.edit_reason}")
+            st.markdown(f"**Improvement:** {step.improvement if step.improvement is not None else '-'}")
+            if step.stop_reason:
+                st.markdown(f"**종료 이유:** {step.stop_reason}")
+
+    report = generate_optimization_loop_report(result)
+    st.subheader("반복형 최적화 리포트")
+    st.markdown(report)
+    st.download_button("리포트 다운로드", report, file_name="optimization_loop_report.md", mime="text/markdown")
+    st.caption(
+        "본 결과는 계산 기반 ADMET risk prioritization이며 실제 효능과 안전성을 보장하지 않습니다. "
+        "각 단계의 saliency는 모델/휴리스틱 기반 설명으로, 화학적 인과관계를 확정하지 않습니다. "
+        "실제 신약 개발에는 후속 wet lab 검증과 전문가 검토가 필요합니다."
+    )
 
 
 def _saliency_endpoint_options(abnormalities: list[Any]) -> list[str]:
@@ -410,6 +574,53 @@ def run_analysis(
     }
 
 
+def run_optimization_loop(
+    smiles: str,
+    is_cns_target: bool,
+    herg_threshold: float,
+    ames_threshold: float,
+    min_solubility: float,
+    min_logp: float,
+    max_logp: float,
+    predictor_mode: str,
+    max_iterations: int,
+    max_candidates_per_step: int,
+    min_improvement: float,
+    use_crem: bool,
+    crem_db_path: str | None,
+    min_similarity: float,
+    preserve_scaffold: bool,
+) -> OptimizationLoopResult:
+    """Run the closed-loop iterative optimizer."""
+    predictors, _predictor_sources = build_predictors(predictor_mode)
+    abnormality_gate = AbnormalityGate(
+        AbnormalityConfig(
+            is_cns_target=is_cns_target,
+            herg_threshold=herg_threshold,
+            ames_threshold=ames_threshold,
+            min_solubility=min_solubility,
+            min_logp=min_logp,
+            max_logp=max_logp,
+        )
+    )
+    loop = OptimizationLoop(
+        predictors=predictors,
+        abnormality_gate=abnormality_gate,
+        saliency_analyzer=HeuristicSaliencyAnalyzer(),
+        scaffold_gate=ScaffoldGate(),
+        candidate_generator=CandidateGenerator(),
+        scorer=score_candidate,
+        max_iterations=max_iterations,
+        max_candidates_per_step=max_candidates_per_step,
+        min_improvement=min_improvement,
+        use_crem=use_crem,
+        crem_db_path=crem_db_path,
+        preserve_scaffold=preserve_scaffold,
+        min_similarity=min_similarity,
+    )
+    return loop.run(smiles)
+
+
 def render_molecule_optimizer() -> None:
     """Render the molecule optimizer page."""
     st.title("ADMET-MoE 분자 최적화 MVP")
@@ -418,8 +629,10 @@ def render_molecule_optimizer() -> None:
     with st.sidebar:
         st.header("입력")
         smiles = st.text_input("초기 SMILES", value="CC(C)Oc1ccc(Cl)cc1C(=O)O")
-        target_context = st.radio("타깃 맥락", ["비-CNS 타깃", "CNS 타깃"], index=0)
+        target_options = ["비-CNS 타깃", "CNS 타깃"]
+        target_context = st.radio("타깃 맥락", target_options, index=0)
         predictor_mode = st.radio("Predictor mode", ["Dummy / Heuristic", "GNN Checkpoint"], index=0)
+        execution_mode = st.radio("실행 모드", ["단일 후보 생성", "반복형 최적화"], index=0)
         top_k = st.slider("추천 후보 수 Top-K", min_value=3, max_value=20, value=8, step=1)
         st.markdown("**목표 물성 범위**")
         min_solubility = st.slider("Solubility minimum", -8.0, 1.0, -3.5, 0.1)
@@ -431,32 +644,66 @@ def render_molecule_optimizer() -> None:
         crem_db_path = st.text_input("CReM fragment DB 경로", value="")
         min_similarity = st.slider("Minimum similarity to original", 0.0, 1.0, 0.3, 0.05)
         preserve_scaffold = st.checkbox("Scaffold 보존", value=True)
+        if execution_mode == "반복형 최적화":
+            st.markdown("**반복형 최적화 설정**")
+            max_iterations = st.slider("max_iterations", 1, 10, 5, 1)
+            max_candidates_per_step = st.slider("max_candidates_per_step", 5, 50, 20, 1)
+            min_improvement = st.number_input("min_improvement", min_value=0.0, max_value=1.0, value=0.01, step=0.01)
+        else:
+            max_iterations = 1
+            max_candidates_per_step = max(top_k * 4, 12)
+            min_improvement = 0.01
         run_button = st.button("최적화 실행", type="primary")
 
     if run_button:
         try:
-            selected_atoms, selected_substructure, _selected_label = _stored_generation_target()
-            result = run_analysis(
-                smiles=smiles,
-                is_cns_target=target_context == "CNS 타깃",
-                top_k=top_k,
-                herg_threshold=herg_threshold,
-                ames_threshold=ames_threshold,
-                min_solubility=min_solubility,
-                min_logp=min_logp,
-                max_logp=max_logp,
-                use_crem=use_crem,
-                crem_db_path=crem_db_path,
-                min_similarity=min_similarity,
-                preserve_scaffold=preserve_scaffold,
-                selected_target_atom_indices=selected_atoms,
-                selected_target_substructure=selected_substructure,
-                predictor_mode=predictor_mode,
-            )
-            st.session_state["optimizer_result"] = result
+            if execution_mode == "반복형 최적화":
+                loop_result = run_optimization_loop(
+                    smiles=smiles,
+                    is_cns_target=target_context == target_options[1],
+                    herg_threshold=herg_threshold,
+                    ames_threshold=ames_threshold,
+                    min_solubility=min_solubility,
+                    min_logp=min_logp,
+                    max_logp=max_logp,
+                    predictor_mode=predictor_mode,
+                    max_iterations=max_iterations,
+                    max_candidates_per_step=max_candidates_per_step,
+                    min_improvement=min_improvement,
+                    use_crem=use_crem,
+                    crem_db_path=crem_db_path,
+                    min_similarity=min_similarity,
+                    preserve_scaffold=preserve_scaffold,
+                )
+                st.session_state["optimization_loop_result"] = loop_result
+                st.session_state["last_execution_mode"] = execution_mode
+                result = loop_result
+            else:
+                selected_atoms, selected_substructure, _selected_label = _stored_generation_target()
+                result = run_analysis(
+                    smiles=smiles,
+                    is_cns_target=target_context == target_options[1],
+                    top_k=top_k,
+                    herg_threshold=herg_threshold,
+                    ames_threshold=ames_threshold,
+                    min_solubility=min_solubility,
+                    min_logp=min_logp,
+                    max_logp=max_logp,
+                    use_crem=use_crem,
+                    crem_db_path=crem_db_path,
+                    min_similarity=min_similarity,
+                    preserve_scaffold=preserve_scaffold,
+                    selected_target_atom_indices=selected_atoms,
+                    selected_target_substructure=selected_substructure,
+                    predictor_mode=predictor_mode,
+                )
+                st.session_state["optimizer_result"] = result
+                st.session_state["last_execution_mode"] = execution_mode
         except Exception as exc:
             st.error(f"분석 실패: {exc}")
             return
+    elif st.session_state.get("last_execution_mode") == "반복형 최적화" and "optimization_loop_result" in st.session_state:
+        result = st.session_state["optimization_loop_result"]
     elif "optimizer_result" in st.session_state:
         result = st.session_state["optimizer_result"]
         if "generation_result" not in result:
@@ -464,6 +711,10 @@ def render_molecule_optimizer() -> None:
             return
     else:
         st.info("초기 SMILES를 입력한 뒤 최적화를 실행하세요.")
+        return
+
+    if isinstance(result, OptimizationLoopResult):
+        _render_loop_result(result)
         return
 
     left, right = st.columns([1, 2])

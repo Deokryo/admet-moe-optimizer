@@ -6,6 +6,7 @@ from src.agents.abnormality_gate import Abnormality
 from src.agents.saliency import SaliencyTarget
 from src.agents.scaffold_gate import ScaffoldDecision
 from src.predictors.base import Prediction
+from src.agents.optimization_loop import OptimizationLoopResult
 
 
 def build_report(
@@ -69,3 +70,57 @@ def build_report(
     )
     return "\n".join(lines)
 
+
+def generate_optimization_loop_report(result: OptimizationLoopResult) -> str:
+    """Create a markdown summary for an iterative optimization loop."""
+    lines = [
+        "# 반복형 ADMET-MoE 최적화 리포트",
+        "",
+        f"- 초기 SMILES: `{result.initial_smiles}`",
+        f"- 최종 SMILES: `{result.final_smiles}`",
+        f"- 성공 여부: {result.success}",
+        f"- 종료 이유: {result.stop_reason}",
+        f"- 총 iteration 수: {result.total_iterations}",
+        "",
+        "## Iteration 요약",
+    ]
+    for step in result.steps:
+        abnormal_names = [getattr(item, "endpoint", "-") for item in step.abnormal_endpoints]
+        top_substructure = "-"
+        saliency_source = "-"
+        if step.saliency_result:
+            saliency_source = str(step.saliency_result.get("source", "-"))
+            substructures = step.saliency_result.get("substructures", [])
+            if isinstance(substructures, list) and substructures:
+                first = substructures[0]
+                if isinstance(first, dict):
+                    top_substructure = str(first.get("Substructure", first.get("name", "-")))
+
+        lines.extend(
+            [
+                "",
+                f"### Step {step.iteration}",
+                f"- 입력 분자: `{step.canonical_input_smiles}`",
+                f"- 이상 endpoint: {', '.join(abnormal_names) if abnormal_names else '없음'}",
+                f"- 선택 endpoint: {step.selected_endpoint or '-'}",
+                f"- saliency source: {saliency_source}",
+                f"- 주요 substructure: {top_substructure}",
+                f"- 선택 후보: `{step.selected_candidate_smiles or '-'}`",
+                f"- 선택 후보 score: {step.selected_candidate_score if step.selected_candidate_score is not None else '-'}",
+                f"- improvement: {step.improvement if step.improvement is not None else '-'}",
+                f"- 편집 근거: {step.edit_reason}",
+            ]
+        )
+        if step.stop_reason:
+            lines.append(f"- 종료 이유: {step.stop_reason}")
+
+    lines.extend(
+        [
+            "",
+            "## Disclaimer",
+            "본 결과는 계산 기반 ADMET risk prioritization이며 실제 효능과 안전성을 보장하지 않습니다. "
+            "각 단계의 saliency는 모델/휴리스틱 기반 설명으로, 화학적 인과관계를 확정하지 않습니다. "
+            "실제 신약 개발에는 후속 wet lab 검증과 전문가 검토가 필요합니다.",
+        ]
+    )
+    return "\n".join(lines)
