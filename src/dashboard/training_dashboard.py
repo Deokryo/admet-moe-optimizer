@@ -480,18 +480,75 @@ def _plot_completed_fold_metrics(completed_df: pd.DataFrame, task: str) -> None:
     _plot_line(chart_df, [metric for metric in metrics if metric in completed_df.columns], "Completed fold test metrics")
 
 
+def _live_metrics_frame(
+    cv_root: Path,
+    dataset: str,
+    model_type: str,
+    folds: list[int],
+    metric_names: list[str],
+) -> pd.DataFrame:
+    """Build a long DataFrame for overlaying live epoch curves across folds."""
+    rows: list[dict[str, Any]] = []
+    for fold in folds:
+        live_rows = read_jsonl_safe(cv_root / dataset / model_type / f"fold_{fold}" / "live_metrics.jsonl")
+        for row in live_rows:
+            epoch = row.get("epoch")
+            if epoch is None:
+                continue
+            for metric in metric_names:
+                value = row.get(metric)
+                if value is None:
+                    continue
+                try:
+                    numeric_value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                rows.append(
+                    {
+                        "epoch": int(epoch),
+                        "fold": int(fold),
+                        "metric": metric,
+                        "value": numeric_value,
+                        "series": f"fold {fold} / {metric}",
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def _plot_live_epoch_metrics(live_df: pd.DataFrame) -> None:
+    """Render live epoch metrics with a separate color per fold/metric series."""
+    if live_df.empty:
+        st.info("선택한 fold/metric에 대한 live epoch 로그가 아직 없습니다.")
+        return
+    try:
+        import plotly.express as px
+
+        fig = px.line(
+            live_df,
+            x="epoch",
+            y="value",
+            color="series",
+            markers=True,
+            title="Live epoch metric curves",
+            labels={"epoch": "Epoch", "value": "Metric value", "series": "Fold / Metric"},
+        )
+        fig.update_layout(height=520, legend_title_text="Fold / Metric")
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception:
+        wide = live_df.pivot_table(index="epoch", columns="series", values="value", aggfunc="last").sort_index()
+        st.line_chart(wide)
+
+
 def _render_live_monitor(cv_root: Path) -> None:
     """Render live status, fold table, curves, and interim results."""
     st.markdown("### Live 10-Fold Monitor")
-    left, right, third, fourth = st.columns([1, 1, 1, 1])
+    left, right, third = st.columns([1, 1, 1])
     with left:
         dataset = st.selectbox("Monitor dataset", [item["dataset"] for item in DATASETS], key="cv_monitor_dataset")
     with right:
         model_type = st.selectbox("Monitor model", MODEL_TYPES, key="cv_monitor_model")
     with third:
         refresh_interval = st.selectbox("Refresh interval", ["manual", "5 seconds", "10 seconds", "30 seconds"], key="cv_monitor_refresh")
-    with fourth:
-        monitor_view = st.radio("Monitor view", ["Table view", "Graph view"], horizontal=True, key="cv_monitor_view")
     auto_refresh = st.checkbox("Auto refresh", value=False, key="cv_monitor_auto")
 
     status_path = _run_status_path(cv_root, dataset, model_type)
@@ -536,67 +593,40 @@ def _render_live_monitor(cv_root: Path) -> None:
             atomic_write_json(status_path, status)
             st.warning("run_status.json을 stopped로 표시했습니다. 실제 OS process는 종료하지 않았습니다.")
 
-    fold_status_df = _fold_status_frame(cv_root, dataset, model_type, status)
     current_fold = (status or {}).get("current_fold")
     if current_fold is None:
         current_fold = 0
-    live_rows = read_jsonl_safe(cv_root / dataset / model_type / f"fold_{int(current_fold)}" / "live_metrics.jsonl")
-    completed_df = _completed_fold_metrics(cv_root, dataset, model_type, task, num_folds)
-    summary = _load_cv_summary(cv_root, dataset, model_type)
 
-    if monitor_view == "Table view":
-        st.markdown("**Fold status**")
-        st.dataframe(fold_status_df, use_container_width=True, hide_index=True)
-
-        st.markdown("**Current fold epoch table**")
-        if live_rows:
-            st.dataframe(pd.DataFrame(live_rows), use_container_width=True, hide_index=True)
-        else:
-            st.info("현재 fold의 live_metrics.jsonl이 아직 없거나 갱신 중입니다.")
-
-        st.markdown("**Completed fold test results**")
-        if not completed_df.empty:
-            st.dataframe(completed_df, use_container_width=True, hide_index=True)
-        _render_interim_summary(completed_df, task)
-
-        st.markdown("**Final CV summary**")
-        if summary:
-            metric_rows = []
-            for metric, values in (summary.get("metrics_mean_std") or {}).items():
-                metric_rows.append({"Metric": metric.upper(), "Mean": _format_value(values.get("mean")), "Std": _format_value(values.get("std"))})
-            st.dataframe(pd.DataFrame(metric_rows), use_container_width=True, hide_index=True)
-        else:
-            st.info("cv_summary.json은 아직 생성되지 않았습니다.")
+    st.markdown("**실시간 epoch 학습 그래프**")
+    fold_options = list(range(num_folds))
+    fold_mode = st.radio("Fold 비교 범위", ["Current fold", "All folds", "Select folds"], horizontal=True, key="cv_monitor_fold_mode")
+    if fold_mode == "Current fold":
+        selected_folds = [int(current_fold)]
+    elif fold_mode == "All folds":
+        selected_folds = fold_options
     else:
-        st.markdown("**Fold status overview**")
-        if not fold_status_df.empty:
-            status_counts = fold_status_df["Status"].value_counts().reset_index()
-            status_counts.columns = ["Status", "Count"]
-            try:
-                import plotly.express as px
+        selected_folds = st.multiselect("비교할 fold 선택", fold_options, default=[int(current_fold)], key="cv_monitor_selected_folds")
+    if not selected_folds:
+        st.warning("그래프에 표시할 fold를 하나 이상 선택해 주세요.")
 
-                fig = px.bar(status_counts, x="Status", y="Count", text="Count", title="Fold status count")
-                fig.update_layout(height=320)
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception:
-                st.bar_chart(status_counts.set_index("Status"))
+    valid_metrics = ["valid_mae", "valid_rmse", "valid_r2"] if task == "regression" else ["valid_auroc", "valid_auprc", "valid_f1", "valid_accuracy"]
+    main_valid_metric = "valid_mae" if task == "regression" else "valid_auroc"
+    metric_options = [*valid_metrics, "valid_loss", "train_loss"]
+    selected_metrics = st.multiselect(
+        "그래프에 겹쳐서 볼 metric",
+        metric_options,
+        default=[main_valid_metric],
+        key="cv_monitor_selected_metrics",
+    )
+    if not selected_metrics:
+        st.warning("그래프에 표시할 metric을 하나 이상 선택해 주세요.")
 
-        st.markdown("**Current fold training curves**")
-        if live_rows:
-            live_df = pd.DataFrame(live_rows)
-            _plot_line(live_df, ["train_loss", "valid_loss"], f"Fold {current_fold} Train loss / Valid loss")
-            if task == "regression":
-                _plot_line(live_df, ["valid_mae", "valid_rmse", "valid_r2"], f"Fold {current_fold} Regression metrics")
-            else:
-                _plot_line(live_df, ["valid_auroc", "valid_auprc", "valid_f1", "valid_accuracy"], f"Fold {current_fold} Classification metrics")
-        else:
-            st.info("현재 fold의 live_metrics.jsonl이 아직 없거나 갱신 중입니다.")
+    live_df = _live_metrics_frame(cv_root, dataset, model_type, selected_folds, selected_metrics)
+    _plot_live_epoch_metrics(live_df)
 
-        st.markdown("**Completed fold metric graph**")
-        _plot_completed_fold_metrics(completed_df, task)
-
-        st.markdown("**Interim mean ± std**")
-        _render_interim_summary(completed_df, task)
+    st.caption(
+        "각 선은 `fold / metric` 조합입니다. fold를 여러 개 선택하면 같은 valid metric을 fold별 색상으로 겹쳐 비교할 수 있습니다."
+    )
 
     if st.button("Manual refresh"):
         st.rerun()
