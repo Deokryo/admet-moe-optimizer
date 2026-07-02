@@ -127,7 +127,11 @@ def _candidate_table(records: list[dict[str, Any]]) -> pd.DataFrame:
                 "hERG Risk": round(float(preds["hERG Expert"].value), 3),
                 "AMES Risk": round(float(preds["AMES Expert"].value), 3),
                 "원본 유사도": round(float(record["similarity"]), 3),
-                "생성 규칙": record["generation_note"],
+                "Source": record["source"],
+                "Generation Method": record["generation_method"],
+                "Edited Region": record["edited_region"] or "-",
+                "Target Atoms": ", ".join(str(atom) for atom in (record["target_atoms"] or [])) or "-",
+                "Note": record["generation_note"] or "-",
             }
         )
     return pd.DataFrame(rows)
@@ -159,6 +163,38 @@ def _saliency_endpoint_options(abnormalities: list[Any]) -> list[str]:
 def _source_label(source: str) -> str:
     """Return a UI label for the saliency source."""
     return "GNN Saliency" if source == "gnn" else "Heuristic Saliency"
+
+
+def _extract_target_atoms(target_substructure: dict[str, object] | None) -> list[int] | None:
+    """Extract atom indices from a stored saliency target dictionary."""
+    if not target_substructure:
+        return None
+    raw_atoms = target_substructure.get("Atom indices") or target_substructure.get("Atom index") or target_substructure.get("atom_indices")
+    if isinstance(raw_atoms, str):
+        atoms = [int(item.strip()) for item in raw_atoms.split(",") if item.strip().isdigit()]
+        return atoms or None
+    if isinstance(raw_atoms, list):
+        atoms = [int(item) for item in raw_atoms if isinstance(item, int)]
+        return atoms or None
+    return None
+
+
+def _stored_generation_target() -> tuple[list[int] | None, dict[str, object] | None, str]:
+    """Return the user-selected saliency target from session state if available."""
+    selected = st.session_state.get("selected_saliency_target")
+    if not isinstance(selected, dict):
+        return None, None, "선택된 saliency target 없음"
+    substructure = selected.get("substructure")
+    target_substructure = substructure if isinstance(substructure, dict) else None
+    target_atoms = selected.get("top_atoms")
+    if not isinstance(target_atoms, list) or not target_atoms:
+        target_atoms = _extract_target_atoms(target_substructure)
+    target_atoms = [int(atom) for atom in target_atoms] if target_atoms else None
+    endpoint = selected.get("endpoint", "-")
+    source = selected.get("source", "-")
+    name = target_substructure.get("Substructure", "-") if target_substructure else "-"
+    label = f"{endpoint} / {name} / atoms {target_atoms or []} / source: {source}"
+    return target_atoms, target_substructure, label
 
 
 def _render_saliency_section(result: dict[str, Any]) -> None:
@@ -250,6 +286,12 @@ def run_analysis(
     min_solubility: float,
     min_logp: float,
     max_logp: float,
+    use_crem: bool,
+    crem_db_path: str | None,
+    min_similarity: float,
+    preserve_scaffold: bool,
+    selected_target_atom_indices: list[int] | None,
+    selected_target_substructure: dict[str, object] | None,
     predictor_mode: str,
 ) -> dict[str, Any]:
     """Run the complete parse-predict-generate-rank workflow."""
@@ -281,15 +323,34 @@ def run_analysis(
 
     saliency_analyzer = HeuristicSaliencyAnalyzer()
     saliency_targets = saliency_analyzer.find_targets(mol)
+    target_atom_indices = selected_target_atom_indices
+    target_substructure = selected_target_substructure
+    target_label = "선택된 saliency target 없음"
+    if target_atom_indices:
+        target_label = f"UI selected target atoms {target_atom_indices}"
+    elif saliency_targets:
+        first_target = saliency_targets[0]
+        target_atom_indices = first_target.atom_indices
+        target_substructure = first_target.to_dict()
+        target_label = f"자동 saliency target: {first_target.substructure_name} / atoms {first_target.atom_indices}"
 
     scaffold_gate = ScaffoldGate()
     scaffold_decisions = scaffold_gate.evaluate(mol, saliency_targets)
 
     generator = CandidateGenerator()
-    generated = generator.generate(original_smiles, max_candidates=max(top_k * 4, 12))
+    generation_result = generator.generate(
+        original_smiles,
+        max_candidates=max(top_k * 4, 12),
+        use_crem=use_crem,
+        crem_db_path=crem_db_path,
+        target_atom_indices=target_atom_indices,
+        target_substructure=target_substructure,
+        preserve_scaffold=preserve_scaffold,
+        min_similarity=min_similarity,
+    )
 
     records: list[dict[str, Any]] = []
-    for candidate in generated:
+    for candidate in generation_result.candidates:
         candidate_mol = mol_from_smiles(candidate.smiles)
         if candidate_mol is None:
             continue
@@ -300,6 +361,10 @@ def run_analysis(
             {
                 "smiles": candidate.smiles,
                 "generation_note": candidate.note,
+                "source": candidate.source,
+                "generation_method": candidate.generation_method,
+                "edited_region": candidate.edited_region,
+                "target_atoms": candidate.target_atoms,
                 "descriptors": candidate_desc,
                 "predictions": candidate_preds,
                 "score": score,
@@ -337,6 +402,8 @@ def run_analysis(
         "predictor_sources": predictor_sources,
         "abnormalities": abnormalities,
         "saliency_targets": saliency_targets,
+        "generation_target_label": target_label,
+        "generation_result": generation_result,
         "scaffold_decisions": scaffold_decisions,
         "candidate_records": top_records,
         "report": report,
@@ -359,10 +426,16 @@ def render_molecule_optimizer() -> None:
         min_logp, max_logp = st.slider("LogP 목표 범위", -1.0, 6.0, (1.0, 3.0), 0.1)
         herg_threshold = st.slider("hERG risk 임계값", 0.1, 0.9, 0.55, 0.05)
         ames_threshold = st.slider("AMES risk 임계값", 0.1, 0.9, 0.50, 0.05)
+        st.markdown("**후보 생성 엔진**")
+        use_crem = st.checkbox("CReM 후보 생성 사용", value=False)
+        crem_db_path = st.text_input("CReM fragment DB 경로", value="")
+        min_similarity = st.slider("Minimum similarity to original", 0.0, 1.0, 0.3, 0.05)
+        preserve_scaffold = st.checkbox("Scaffold 보존", value=True)
         run_button = st.button("최적화 실행", type="primary")
 
     if run_button:
         try:
+            selected_atoms, selected_substructure, _selected_label = _stored_generation_target()
             result = run_analysis(
                 smiles=smiles,
                 is_cns_target=target_context == "CNS 타깃",
@@ -372,6 +445,12 @@ def render_molecule_optimizer() -> None:
                 min_solubility=min_solubility,
                 min_logp=min_logp,
                 max_logp=max_logp,
+                use_crem=use_crem,
+                crem_db_path=crem_db_path,
+                min_similarity=min_similarity,
+                preserve_scaffold=preserve_scaffold,
+                selected_target_atom_indices=selected_atoms,
+                selected_target_substructure=selected_substructure,
                 predictor_mode=predictor_mode,
             )
             st.session_state["optimizer_result"] = result
@@ -380,6 +459,9 @@ def render_molecule_optimizer() -> None:
             return
     elif "optimizer_result" in st.session_state:
         result = st.session_state["optimizer_result"]
+        if "generation_result" not in result:
+            st.info("후보 생성 엔진 설정이 변경되었습니다. 최적화를 다시 실행하세요.")
+            return
     else:
         st.info("초기 SMILES를 입력한 뒤 최적화를 실행하세요.")
         return
@@ -429,6 +511,21 @@ def render_molecule_optimizer() -> None:
         st.dataframe(pd.DataFrame([decision.to_dict() for decision in decisions]), use_container_width=True, hide_index=True)
     else:
         st.info("생성된 scaffold gate 판단이 없습니다.")
+
+    generation_result = result["generation_result"]
+    st.subheader("후보 생성 상태")
+    status_rows = [
+        {"항목": "CReM available", "값": generation_result.crem_available},
+        {"항목": "CReM used", "값": generation_result.used_crem},
+        {"항목": "Rule-based used", "값": generation_result.used_rule_based},
+        {"항목": "CReM status", "값": generation_result.crem_status},
+        {"항목": "Rule-based status", "값": generation_result.rule_based_status},
+        {"항목": "Generation target", "값": result["generation_target_label"]},
+        {"항목": "Final candidates", "값": len(generation_result.candidates)},
+    ]
+    st.dataframe(pd.DataFrame(status_rows), use_container_width=True, hide_index=True)
+    for warning in generation_result.warnings:
+        st.warning(warning)
 
     st.subheader("생성 후보 Top-K")
     records = result["candidate_records"]
