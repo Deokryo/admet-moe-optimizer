@@ -30,7 +30,12 @@ class Abnormality:
 
     def to_dict(self) -> dict[str, object]:
         """Serialize for display."""
-        return {"Endpoint": self.endpoint, "예측값": round(self.value, 4), "심각도": self.severity, "사유": self.reason}
+        return {
+            "Endpoint": self.endpoint,
+            "예측값": round(self.value, 4),
+            "심각도": self.severity,
+            "사유": self.reason,
+        }
 
 
 class AbnormalityGate:
@@ -50,19 +55,44 @@ class AbnormalityGate:
         ames = float(predictions["AMES Expert"].value)
 
         if sol < self.config.min_solubility:
-            flags.append(Abnormality("Solubility", sol, "높음", "예측 용해도가 낮습니다."))
-        if logp < self.config.min_logp or logp > self.config.max_logp:
-            flags.append(Abnormality("Lipophilicity", logp, "중간", "LogP가 MVP 목표 범위를 벗어났습니다."))
+            gap = self.config.min_solubility - sol
+            flags.append(
+                Abnormality(
+                    "Solubility",
+                    sol,
+                    "높음",
+                    f"예측 용해도가 목표 minimum {self.config.min_solubility:.2f}보다 {gap:.2f} 낮습니다.",
+                )
+            )
+        if logp < self.config.min_logp:
+            gap = self.config.min_logp - logp
+            flags.append(
+                Abnormality(
+                    "Lipophilicity",
+                    logp,
+                    "중간",
+                    f"LogP가 목표 범위 {self.config.min_logp:.2f}-{self.config.max_logp:.2f}보다 {gap:.2f} 낮습니다.",
+                )
+            )
+        elif logp > self.config.max_logp:
+            gap = logp - self.config.max_logp
+            flags.append(
+                Abnormality(
+                    "Lipophilicity",
+                    logp,
+                    "중간",
+                    f"LogP가 목표 범위 {self.config.min_logp:.2f}-{self.config.max_logp:.2f}보다 {gap:.2f} 높습니다.",
+                )
+            )
         if self.config.is_cns_target and bbb < 0.45:
-            flags.append(Abnormality("BBB", bbb, "중간", "CNS 타깃에서는 의미 있는 BBB 투과 가능성이 필요합니다."))
+            flags.append(Abnormality("BBB", bbb, "중간", "CNS 타깃에서는 충분한 BBB 통과 가능성이 필요합니다."))
         if not self.config.is_cns_target and bbb > 0.65:
-            flags.append(Abnormality("BBB", bbb, "중간", "비-CNS 타깃에서는 낮은 BBB 투과 가능성이 선호될 수 있습니다."))
+            flags.append(Abnormality("BBB", bbb, "중간", "비-CNS 타깃에서는 높은 BBB 통과 가능성이 선호되지 않을 수 있습니다."))
         if herg >= self.config.herg_threshold:
-            flags.append(Abnormality("hERG", herg, "높음", "hERG risk 예측값이 선택한 임계값 이상입니다."))
+            flags.append(Abnormality("hERG", herg, "높음", f"hERG risk 예측값이 임계값 {self.config.herg_threshold:.2f} 이상입니다."))
         if ames >= self.config.ames_threshold:
-            flags.append(Abnormality("AMES", ames, "높음", "AMES risk 예측값이 선택한 임계값 이상입니다."))
+            flags.append(Abnormality("AMES", ames, "높음", f"AMES risk 예측값이 임계값 {self.config.ames_threshold:.2f} 이상입니다."))
 
         if descriptors["qed"] < 0.25:
             flags.append(Abnormality("QED", descriptors["qed"], "낮음", "현재 profile에서 QED가 낮습니다."))
         return flags
-

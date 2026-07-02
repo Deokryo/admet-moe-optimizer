@@ -247,6 +247,9 @@ def run_analysis(
     top_k: int,
     herg_threshold: float,
     ames_threshold: float,
+    min_solubility: float,
+    min_logp: float,
+    max_logp: float,
     predictor_mode: str,
 ) -> dict[str, Any]:
     """Run the complete parse-predict-generate-rank workflow."""
@@ -269,6 +272,9 @@ def run_analysis(
             is_cns_target=is_cns_target,
             herg_threshold=herg_threshold,
             ames_threshold=ames_threshold,
+            min_solubility=min_solubility,
+            min_logp=min_logp,
+            max_logp=max_logp,
         )
     )
     abnormalities = abnormality_gate.evaluate(descriptors, predictions)
@@ -318,6 +324,13 @@ def run_analysis(
     return {
         "original_smiles": original_smiles,
         "mol": mol,
+        "target_config": {
+            "Solubility minimum": min_solubility,
+            "LogP minimum": min_logp,
+            "LogP maximum": max_logp,
+            "hERG threshold": herg_threshold,
+            "AMES threshold": ames_threshold,
+        },
         "descriptors": descriptors,
         "predictions": predictions,
         "predictor_objects": predictor_objects,
@@ -341,6 +354,9 @@ def render_molecule_optimizer() -> None:
         target_context = st.radio("타깃 맥락", ["비-CNS 타깃", "CNS 타깃"], index=0)
         predictor_mode = st.radio("Predictor mode", ["Dummy / Heuristic", "GNN Checkpoint"], index=0)
         top_k = st.slider("추천 후보 수 Top-K", min_value=3, max_value=20, value=8, step=1)
+        st.markdown("**목표 물성 범위**")
+        min_solubility = st.slider("Solubility minimum", -8.0, 1.0, -3.5, 0.1)
+        min_logp, max_logp = st.slider("LogP 목표 범위", -1.0, 6.0, (1.0, 3.0), 0.1)
         herg_threshold = st.slider("hERG risk 임계값", 0.1, 0.9, 0.55, 0.05)
         ames_threshold = st.slider("AMES risk 임계값", 0.1, 0.9, 0.50, 0.05)
         run_button = st.button("최적화 실행", type="primary")
@@ -353,6 +369,9 @@ def render_molecule_optimizer() -> None:
                 top_k=top_k,
                 herg_threshold=herg_threshold,
                 ames_threshold=ames_threshold,
+                min_solubility=min_solubility,
+                min_logp=min_logp,
+                max_logp=max_logp,
                 predictor_mode=predictor_mode,
             )
             st.session_state["optimizer_result"] = result
@@ -372,6 +391,15 @@ def render_molecule_optimizer() -> None:
     with right:
         st.subheader("RDKit 분자 descriptor")
         st.dataframe(_descriptor_frame(result["descriptors"]), use_container_width=True, hide_index=True)
+
+    st.subheader("현재 목표값 / 임계값")
+    st.dataframe(
+        pd.DataFrame(
+            [{"항목": key, "값": round(float(value), 4)} for key, value in result["target_config"].items()]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     st.subheader("ADMET endpoint 예측")
     st.dataframe(_prediction_frame(result["predictions"], result["predictor_sources"]), use_container_width=True, hide_index=True)
