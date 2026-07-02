@@ -1,0 +1,153 @@
+{
+  "site": {
+    "name": "AI Engineering Portfolio",
+    "tagline": "Graph ML, GNN explanation, GraphRAG, and applied AI engineering.",
+    "one_liner": "GNN, GraphRAG, explainable AI, and production-minded AI engineering projects.",
+    "representative_technologies": [
+      "Python",
+      "PyTorch",
+      "PyTorch Geometric",
+      "Streamlit",
+      "Graph Neural Networks",
+      "GraphRAG",
+      "Knowledge Graphs",
+      "Reinforcement Learning"
+    ],
+    "representative_project_ids": [
+      "rl-gnn-counterfactual",
+      "newtrend",
+      "graphrag-kg"
+    ],
+    "contacts": {
+      "email": "your.email@example.com",
+      "github": "https://github.com/Deokryo",
+      "linkedin": "",
+      "notion": "",
+      "resume_pdf": ""
+    }
+  },
+  "projects": [
+    {
+      "id": "rl-gnn-counterfactual",
+      "title": "RL-based GNN Counterfactual Explanation",
+      "subtitle": "Counterfactual explanation framework for graph neural networks.",
+      "description": "A research-oriented prototype that uses reinforcement learning to search graph edits that change a GNN prediction while preserving graph plausibility.",
+      "tech": [
+        "Python",
+        "PyTorch",
+        "PyTorch Geometric",
+        "Reinforcement Learning",
+        "GNN"
+      ],
+      "links": {
+        "github": "",
+        "demo": "",
+        "paper": ""
+      },
+      "highlights": [
+        "Defined graph edit actions for counterfactual search.",
+        "Separated explanation objective from downstream GNN architecture.",
+        "Tracked validity, sparsity, and prediction flip quality."
+      ]
+    },
+    {
+      "id": "newtrend",
+      "title": "NewTrend",
+      "subtitle": "Trend discovery and ranking system.",
+      "description": "An AI-assisted trend monitoring pipeline that collects signals, ranks topics, and summarizes emerging changes for decision support.",
+      "tech": [
+        "Python",
+        "Data Pipeline",
+        "Ranking",
+        "LLM",
+        "Dashboard"
+      ],
+      "links": {
+        "github": "",
+        "demo": "",
+        "paper": ""
+      },
+      "highlights": [
+        "Built an end-to-end trend ranking workflow.",
+        "Combined structured metrics with generated summaries.",
+        "Designed outputs for repeated operational use."
+      ]
+    },
+    {
+      "id": "graphrag-kg",
+      "title": "GraphRAG / Knowledge Graph Prototype",
+      "subtitle": "Retrieval-augmented generation with graph-structured context.",
+      "description": "A prototype that organizes entities and relations into a knowledge graph and uses graph-aware retrieval for more grounded generation.",
+      "tech": [
+        "GraphRAG",
+        "Knowledge Graph",
+        "Python",
+        "LLM",
+        "Retrieval"
+      ],
+      "links": {
+        "github": "",
+        "demo": "",
+        "paper": ""
+      },
+      "highlights": [
+        "Modeled entities and relations as explicit graph context.",
+        "Compared graph retrieval with plain chunk retrieval.",
+        "Focused on traceability and inspectable context."
+      ]
+    },
+    {
+      "id": "finexplain",
+      "title": "FinExplain",
+      "subtitle": "Explainable finance-oriented AI prototype.",
+      "description": "A finance explanation prototype that converts model outputs and market signals into transparent, reviewable explanations.",
+      "tech": [
+        "Python",
+        "Explainable AI",
+        "Finance",
+        "Dashboard"
+      ],
+      "links": {
+        "github": "",
+        "demo": "",
+        "paper": ""
+      },
+      "highlights": [
+        "Prioritized interpretability over opaque score reporting.",
+        "Structured explanations around evidence and uncertainty.",
+        "Designed for analyst-facing review."
+      ]
+    }
+  ],
+  "research": {
+    "title": "Master's Research Summary",
+    "summary": "Research focused on graph-based machine learning and explainable AI. Replace this text with the final thesis title and abstract.",
+    "problem_definition": "Many GNN predictions are difficult to interpret, especially when users need actionable explanations rather than only feature attribution.",
+    "proposed_method": "The proposed approach explores counterfactual graph edits or graph-structured reasoning to explain model behavior in a more actionable way.",
+    "experimental_results": "Summarize datasets, baselines, metrics, and the strongest quantitative or qualitative findings here.",
+    "limitations_and_extensions": "Current limitations include scalability, domain-specific validity constraints, and evaluation difficulty. Future work can extend to larger graphs, stronger validity checks, and human-centered explanation studies."
+  },
+  "blog": [
+    {
+      "title": "GNN Counterfactual Explanation Notes",
+      "category": "GNN",
+      "date": "2026-07-02",
+      "summary": "A short note on why counterfactual explanations are useful for graph neural networks.",
+      "content": "Counterfactual explanations ask what minimal graph change would alter a model prediction. This framing can be more actionable than only highlighting important nodes or edges."
+    },
+    {
+      "title": "GraphRAG and Knowledge Graph Retrieval",
+      "category": "GraphRAG",
+      "date": "2026-07-02",
+      "summary": "A short note on when graph-structured retrieval can help RAG systems.",
+      "content": "GraphRAG is useful when entity relations matter. Instead of retrieving isolated chunks, a system can retrieve connected facts and expose the reasoning context."
+    },
+    {
+      "title": "AI Engineering Lessons from MVPs",
+      "category": "AI Engineering",
+      "date": "2026-07-02",
+      "summary": "A short note on building AI prototypes that survive real demos.",
+      "content": "A useful AI MVP needs fallback paths, visible status, reproducible outputs, and honest uncertainty. The engineering around the model often matters as much as the model itself."
+    }
+  ]
+}
