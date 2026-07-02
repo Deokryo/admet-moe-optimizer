@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import traceback
 from pathlib import Path
 import sys
 
 import pandas as pd
+import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -15,6 +17,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.training.cv_split import make_cv_folds
 from src.training.cv_summary import build_comparison_csv, summarize_cv_run
 from src.training.dataset_loader import load_tdc_dataset
+from src.training.live_logging import utc_now_iso
+from src.training.run_status import (
+    initial_run_status,
+    mark_fold_completed,
+    mark_fold_failed,
+    mark_fold_started,
+    mark_run_finished,
+    write_run_status,
+)
 from src.training.train import DATASET_TASKS, MODEL_TYPES, train_one_run
 
 
@@ -31,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--num-layers", type=int, default=3)
     parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="cpu")
     parser.add_argument("--checkpoint-dir", default="checkpoints_cv")
     parser.add_argument("--tdc-data-dir", default="./data")
     parser.add_argument("--split-type", choices=["scaffold", "random", "stratified"], default="scaffold")
@@ -39,13 +50,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--skip-existing", action="store_true")
+    parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--force-redownload", action="store_true")
     return parser.parse_args()
+
+
+def _resolve_device(device: str) -> str:
+    """Resolve the requested device string."""
+    if device == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return device
 
 
 def _run_dataset_model(args: argparse.Namespace, dataset: str, model_type: str) -> None:
     """Run CV for one dataset/model pair."""
     task = args.task or DATASET_TASKS[dataset]
+    device = _resolve_device(args.device)
     split = load_tdc_dataset(dataset, data_dir=args.tdc_data_dir, force_redownload=args.force_redownload)
     frame = pd.concat([split.train, split.valid, split.test], ignore_index=True)
     if args.limit:
@@ -56,31 +76,72 @@ def _run_dataset_model(args: argparse.Namespace, dataset: str, model_type: str) 
     folds = make_cv_folds(frame, num_folds=args.num_folds, split_type=split_type, seed=args.seed)
 
     root = Path(args.checkpoint_dir) / dataset / model_type
+    root.mkdir(parents=True, exist_ok=True)
+    status_path = root / "run_status.json"
+    status = initial_run_status(dataset=dataset, task=task, model_type=model_type, num_folds=args.num_folds, epochs=args.epochs)
+    status.update({"status": "running", "last_message": "10-fold CV run started"})
+    write_run_status(status_path, status)
+
     for fold_idx, fold in enumerate(folds):
         output_dir = root / f"fold_{fold_idx}"
         if args.skip_existing and (output_dir / "metrics.json").exists():
             print(f"Skipping existing {dataset}/{model_type}/fold_{fold_idx}")
+            status = mark_fold_completed(status, fold_idx, args.epochs)
+            status["last_message"] = f"Fold {fold_idx} skipped because metrics.json already exists"
+            write_run_status(status_path, status)
             continue
         print(f"Training {dataset} {model_type} fold {fold_idx}")
-        train_one_run(
-            train_df=fold["train"],
-            valid_df=fold["valid"],
-            test_df=fold["test"],
-            dataset_name=dataset,
-            task_type=task,
-            model_type=model_type,
-            output_dir=output_dir,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            lr=args.lr,
-            hidden_dim=args.hidden_dim,
-            num_layers=args.num_layers,
-            dropout=args.dropout,
-            device=args.device,
-            seed=args.seed + fold_idx,
-        )
-    summarize_cv_run(args.checkpoint_dir, dataset, model_type, task, args.num_folds)
+        status = mark_fold_started(status, fold_idx)
+        write_run_status(status_path, status)
+
+        def _status_callback(record: dict) -> None:
+            status["current_fold"] = fold_idx
+            status["current_epoch"] = int(record.get("epoch", 0) or 0)
+            status["updated_at"] = utc_now_iso()
+            status["last_message"] = f"Fold {fold_idx} epoch {status['current_epoch']}/{args.epochs} completed"
+            write_run_status(status_path, status)
+
+        try:
+            train_one_run(
+                train_df=fold["train"],
+                valid_df=fold["valid"],
+                test_df=fold["test"],
+                dataset_name=dataset,
+                task_type=task,
+                model_type=model_type,
+                output_dir=output_dir,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                lr=args.lr,
+                hidden_dim=args.hidden_dim,
+                num_layers=args.num_layers,
+                dropout=args.dropout,
+                device=device,
+                seed=args.seed + fold_idx,
+                live_metrics_path=output_dir / "live_metrics.jsonl",
+                status_callback=_status_callback,
+            )
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            print(error)
+            traceback.print_exc()
+            status = mark_fold_failed(status, fold_idx, error)
+            write_run_status(status_path, status)
+            if not args.continue_on_error:
+                status = mark_run_finished(status, "failed", f"Run failed at fold {fold_idx}", error)
+                write_run_status(status_path, status)
+                raise
+            continue
+
+        status = mark_fold_completed(status, fold_idx, args.epochs)
+        write_run_status(status_path, status)
+
+    summary = summarize_cv_run(args.checkpoint_dir, dataset, model_type, task, args.num_folds)
     build_comparison_csv(args.checkpoint_dir)
+    final_status = "failed" if summary.get("completed_folds", 0) == 0 else "completed"
+    final_message = "10-fold CV run completed" if final_status == "completed" else "10-fold CV run failed"
+    status = mark_run_finished(status, final_status, final_message, status.get("error"))
+    write_run_status(status_path, status)
 
 
 def main() -> None:

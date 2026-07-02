@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.training.live_logging import atomic_write_json
+
 
 REGRESSION_METRICS = ["mae", "rmse", "r2"]
 CLASSIFICATION_METRICS = ["auroc", "auprc", "f1", "accuracy"]
@@ -73,7 +75,7 @@ def summarize_cv_run(
         "fold_metrics": fold_metrics,
     }
     root.mkdir(parents=True, exist_ok=True)
-    (root / "cv_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    atomic_write_json(root / "cv_summary.json", summary)
     return summary
 
 

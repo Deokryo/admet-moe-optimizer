@@ -6,6 +6,7 @@ import argparse
 import json
 import random
 from pathlib import Path
+from typing import Callable, Any
 
 import numpy as np
 import torch
@@ -15,6 +16,7 @@ from torch_geometric.loader import DataLoader
 from src.training.dataset_loader import load_tdc_dataset
 from src.training.evaluate import evaluate_model
 from src.training.featurizer import ATOM_FEATURE_DIM, BOND_FEATURE_DIM, dataframe_to_graphs
+from src.training.live_logging import append_jsonl, atomic_write_json, utc_now_iso
 from src.training.model import build_molecular_gnn
 
 
@@ -109,10 +111,7 @@ def _write_metrics(
     }
     if config:
         output["config"] = config
-    metrics_path = output_dir / "metrics.json"
-    temp_path = output_dir / "metrics.tmp.json"
-    temp_path.write_text(json.dumps(output, indent=2), encoding="utf-8")
-    temp_path.replace(metrics_path)
+    atomic_write_json(output_dir / "metrics.json", output)
 
 
 def _evaluate_loss(model, loader, loss_fn, device: str) -> float:
@@ -165,6 +164,8 @@ def train_one_run(
     dropout: float = 0.1,
     device: str = "cpu",
     seed: int = 42,
+    live_metrics_path: str | Path | None = None,
+    status_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict:
     """Train one model on explicit train/valid/test DataFrames."""
     _set_seed(seed)
@@ -223,9 +224,20 @@ def train_one_run(
             best_value = comparable
             best_epoch = epoch
             torch.save({"model_state_dict": model.state_dict(), "config": config}, best_path)
-        record = {"epoch": epoch, "train_loss": train_loss, "valid_loss": valid_loss, **_flatten_valid_metrics(valid_metrics, task_type)}
+        record = {
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "valid_loss": valid_loss,
+            **_flatten_valid_metrics(valid_metrics, task_type),
+            "is_best": improved,
+            "timestamp": utc_now_iso(),
+        }
         history.append(record)
         _write_metrics(output_path, dataset_name, task_type, history, best_epoch, best_value, status="running", config=config)
+        if live_metrics_path is not None:
+            append_jsonl(live_metrics_path, record)
+        if status_callback is not None:
+            status_callback(record)
         print(json.dumps({**record, "best_valid_metric": best_value}, ensure_ascii=False))
 
     checkpoint = torch.load(best_path, map_location=device)
