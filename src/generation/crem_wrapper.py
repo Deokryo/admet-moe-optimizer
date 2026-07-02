@@ -39,6 +39,37 @@ def _passes_scaffold_filter(original: Chem.Mol, candidate: Chem.Mol, preserve_sc
     return bool(candidate.HasSubstructMatch(scaffold))
 
 
+def _mol_from_crem_item(item: object) -> Chem.Mol | None:
+    """Extract an RDKit molecule from a CReM return item.
+
+    CReM versions/configurations may yield Mol objects, SMILES strings, or
+    tuple/list records whose first field is the generated SMILES. Avoid parsing
+    the string representation of the whole record such as "['CCO', ...]".
+    """
+    if isinstance(item, Chem.Mol):
+        return Chem.Mol(item)
+    if isinstance(item, str):
+        return Chem.MolFromSmiles(item.strip())
+    if isinstance(item, dict):
+        for key in ("smiles", "SMILES", "mol", "Mol", "molecule"):
+            if key in item:
+                mol = _mol_from_crem_item(item[key])
+                if mol is not None:
+                    return mol
+        for value in item.values():
+            mol = _mol_from_crem_item(value)
+            if mol is not None:
+                return mol
+        return None
+    if isinstance(item, (list, tuple)):
+        for value in item:
+            mol = _mol_from_crem_item(value)
+            if mol is not None:
+                return mol
+        return None
+    return None
+
+
 def generate_with_crem(
     smiles: str,
     max_candidates: int = 20,
@@ -84,7 +115,7 @@ def generate_with_crem(
 
     for item in generated:
         try:
-            candidate_mol = item if isinstance(item, Chem.Mol) else Chem.MolFromSmiles(str(item))
+            candidate_mol = _mol_from_crem_item(item)
             if candidate_mol is None:
                 rejected_invalid += 1
                 continue
@@ -108,7 +139,7 @@ def generate_with_crem(
             candidate_smiles,
             GeneratedCandidate(
                 smiles=candidate_smiles,
-                note=target_note or "CReM mutation 후보",
+                note=target_note or "CReM mutation candidate",
                 source="crem",
                 generation_method="crem_mutate_mol",
                 edited_region="target_informed" if target_atom_indices else "crem_mutation",
